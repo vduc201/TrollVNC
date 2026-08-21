@@ -311,6 +311,50 @@
 			<true/>
 		</dict>
 
+		<!-- Capture Backend -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string></string>
+			<key>footerText</key>
+			<string>FAST preserves the original low-latency capture path. FULL is experimental and may include additional visible system UI. Restart TrollVNC after changing this setting.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkListCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>CaptureMode</string>
+			<key>label</key>
+			<string>Capture Mode</string>
+			<key>default</key>
+			<string>fast</string>
+			<key>detail</key>
+			<string>TVNCListItemsController</string>
+			<key>validValues</key>
+			<array>
+				<string>fast</string>
+				<string>full</string>
+				<string>auto</string>
+			</array>
+			<key>validTitles</key>
+			<array>
+				<string>FAST (Original)</string>
+				<string>FULL (Experimental)</string>
+				<string>AUTO (Conservative)</string>
+			</array>
+			<key>shortTitles</key>
+			<array>
+				<string>FAST</string>
+				<string>FULL</string>
+				<string>AUTO</string>
+			</array>
+			<key>staticTextMessage</key>
+			<string>Use FAST for the stable realtime path. Compare FULL on a physical device when visible system UI is missing. AUTO currently starts on FAST.</string>
+		</dict>
+
 		<!-- Sync Orientation -->
 		<dict>
 			<key>cell</key>

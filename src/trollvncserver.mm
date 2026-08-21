@@ -4441,7 +4441,9 @@ static void irSimpleHandleConnection(int cfd) {
 }
 
 static void irStartSimpleControlSocket(void) {
-    if (gIRSimpleAcceptSource || isRepeaterEnabled()) return;
+    // Simple Control is a local USB management channel and must remain
+    // available even when the VNC repeater/viewer mode is enabled.
+    if (gIRSimpleAcceptSource) return;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) { TVPrintError("Simple Control: socket failed: %s", strerror(errno)); return; }
     int yes = 1;

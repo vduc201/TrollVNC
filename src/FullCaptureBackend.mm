@@ -3,7 +3,6 @@
 #import "FullCaptureBackend.h"
 
 #import <CoreVideo/CoreVideo.h>
-#import <IOSurface/IOSurface.h>
 #import <UIKit/UIKit.h>
 #import <dlfcn.h>
 #import <time.h>

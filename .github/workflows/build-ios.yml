@@ -1,0 +1,119 @@
+name: Build iRemoteAgent test package
+
+on:
+  workflow_dispatch:
+
+env:
+  FINALPACKAGE: "1"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
+
+jobs:
+  build-ios:
+    name: Build and validate TrollVNC bootstrap package
+    runs-on: macos-14
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 16.2
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "16.2"
+
+      - name: Report macOS and Xcode versions
+        run: |
+          set -euo pipefail
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Verify iPhoneOS SDK
+        run: |
+          set -euo pipefail
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          test -d "$SDK_PATH"
+          echo "iPhoneOS SDK $SDK_VERSION: $SDK_PATH"
+
+      - name: Install required build tools
+        run: |
+          set -euo pipefail
+          brew install make ldid-procursus xcbeautify
+
+      - name: Check out roothide Theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos-roothide
+          submodules: recursive
+
+      - name: Install the project iOS SDK
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THEOS: ${{ github.workspace }}/theos-roothide
+        run: |
+          set -euo pipefail
+          "$THEOS/bin/install-sdk" iPhoneOS16.5
+          test -d "$THEOS/sdks/iPhoneOS16.5.sdk"
+
+      - name: Clean, compile, and package
+        run: |
+          set -euo pipefail
+          source devkit/bootstrap.sh
+          FINALPACKAGE=1 gmake clean package
+
+      - name: Validate and prepare package
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          packages=(packages/*.tipa)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "Expected exactly one .tipa in packages/, found ${#packages[@]}" >&2
+            exit 1
+          fi
+          package="${packages[0]}"
+
+          unzip -t "$package"
+          validation_dir="$(mktemp -d)"
+          trap 'rm -rf "$validation_dir"' EXIT
+          ditto -x -k "$package" "$validation_dir"
+
+          test -d "$validation_dir/Payload"
+          apps=("$validation_dir"/Payload/*.app)
+          if [ "${#apps[@]}" -ne 1 ]; then
+            echo "Expected exactly one application bundle, found ${#apps[@]}" >&2
+            exit 1
+          fi
+          app="${apps[0]}"
+          plist="$app/Info.plist"
+          test -f "$plist"
+          plutil -lint "$plist"
+
+          executable_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          executable="$app/$executable_name"
+          test -f "$executable"
+          test -x "$executable"
+
+          file "$executable" | tee "$validation_dir/executable-file.txt"
+          file "$executable" | grep -Eq 'Mach-O 64-bit.*arm64|Mach-O universal binary.*arm64'
+          lipo -info "$executable" | tee "$validation_dir/executable-architectures.txt"
+          lipo -archs "$executable" | grep -qw arm64
+          otool -L "$executable" | tee "$validation_dir/runtime-dependencies.txt"
+          ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
+          test -s "$validation_dir/entitlements.plist"
+          plutil -lint "$validation_dir/entitlements.plist"
+
+          mkdir -p artifacts
+          cp "$package" artifacts/iRemoteAgent.tipa
+          test -s artifacts/iRemoteAgent.tipa
+
+      - name: Upload validated package
+        uses: actions/upload-artifact@v4
+        with:
+          name: iRemoteAgent-test
+          path: artifacts/iRemoteAgent.tipa
+          if-no-files-found: error
+          retention-days: 14

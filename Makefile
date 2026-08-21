@@ -30,6 +30,7 @@ trollvncserver_FILES += src/FastCaptureBackend.mm
 trollvncserver_FILES += src/FullCaptureBackend.mm
 trollvncserver_FILES += src/SystemFullCaptureBackend.mm
 trollvncserver_FILES += src/CaptureManager.mm
+trollvncserver_FILES += src/IRDeviceServices.mm
 trollvncserver_FILES += src/STHIDEventGenerator.mm
 trollvncserver_FILES += src/OhMyJetsam.mm
 

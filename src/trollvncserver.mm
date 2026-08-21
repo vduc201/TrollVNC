@@ -39,6 +39,7 @@
 #import <string>
 #import <sys/socket.h>
 #import <sys/sysctl.h>
+#import <time.h>
 #import <unistd.h>
 #import <vector>
 
@@ -47,6 +48,7 @@
 #import "ClipboardManager.h"
 #import "Control.h"
 #import "FBSOrientationObserver.h"
+#import "IRDeviceServices.h"
 #import "IOKitSPI.h"
 #import "Logging.h"
 #import "PSAssistiveTouchSettingsDetail.h"
@@ -106,7 +108,8 @@ static BOOL gAutoAssistEnabled = NO;
 static BOOL gCursorEnabled = NO;
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
-static TVCaptureMode gCaptureMode = TVCaptureModeFast;
+static TVCaptureMode gCaptureMode = TVCaptureModeAuto;
+static NSString *gControlToken = nil; // per-device management API bearer token; never logged
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -310,7 +313,7 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Display/Perf:\n");
     fprintf(stderr, "  -s scale   Output scale 0<s<=1 (default: %.2f)\n", gScale);
     fprintf(stderr, "  -F spec    Frame rate: fps | min-max | min:pref:max\n");
-    fprintf(stderr, "  -X mode    Capture backend: fast|uikit_full|system_full (default: fast)\n");
+    fprintf(stderr, "  -X mode    Capture backend: fast|uikit_full|system_full|auto (default: auto)\n");
     fprintf(stderr, "  -d sec     Defer window (0..0.5, default: %.3f)\n", gDeferWindowSec);
     fprintf(stderr, "  -Q n       Max in-flight encodes (0=never drop, default: %d)\n\n", gMaxInflightUpdates);
 
@@ -473,8 +476,24 @@ static void parseDaemonOptions(void) {
 
     if (!prefs) {
         TVLog(@"-daemon: no preferences found for domain com.82flex.trollvnc");
-        return;
+        prefs = @{};
     }
+
+    NSDictionary *persistentPrefs =
+        [[NSUserDefaults standardUserDefaults] persistentDomainForName:@"com.82flex.trollvnc"] ?: @{};
+    NSString *controlToken = [prefs objectForKey:@"ControlToken"];
+    if (![controlToken isKindOfClass:NSString.class] || controlToken.length < 24)
+        controlToken = persistentPrefs[@"ControlToken"];
+    if (![controlToken isKindOfClass:NSString.class] || controlToken.length < 24) {
+        NSString *first = [NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
+        NSString *second = [NSUUID.UUID.UUIDString stringByReplacingOccurrencesOfString:@"-" withString:@""];
+        controlToken = [first stringByAppendingString:second];
+        NSMutableDictionary *updated = [persistentPrefs mutableCopy];
+        updated[@"ControlToken"] = controlToken;
+        [[NSUserDefaults standardUserDefaults] setPersistentDomain:updated forName:@"com.82flex.trollvnc"];
+        TVLog(@"-daemon: generated a persistent per-device control token");
+    }
+    gControlToken = controlToken;
 
     // Strings
     NSString *desktopName = [prefs objectForKey:@"DesktopName"];
@@ -699,8 +718,8 @@ static void parseDaemonOptions(void) {
     NSString *captureMode = [prefs objectForKey:@"CaptureMode"];
     if ([captureMode isKindOfClass:[NSString class]] && captureMode.length > 0) {
         if (!TVCaptureModeParse(captureMode, &gCaptureMode)) {
-            TVLog(@"-daemon: invalid CaptureMode=%@; using fast", captureMode);
-            gCaptureMode = TVCaptureModeFast;
+            TVLog(@"-daemon: invalid CaptureMode=%@; using auto", captureMode);
+            gCaptureMode = TVCaptureModeAuto;
         }
     }
 
@@ -957,6 +976,10 @@ static void parseCLI(int argc, const char *argv[]) {
         parseDaemonOptions();
         return;
     }
+
+    const char *controlToken = getenv("IREMOTE_CONTROL_TOKEN");
+    if (controlToken && strlen(controlToken) >= 24)
+        gControlToken = [NSString stringWithUTF8String:controlToken];
 
     // Pre-scan for Reverse Connection long options (-reverse, -repeater)
     // Build a filtered argv without these options for getopt handling of the rest.
@@ -1274,7 +1297,7 @@ static void parseCLI(int argc, const char *argv[]) {
         case 'X': {
             NSString *value = [NSString stringWithUTF8String:optarg ?: ""];
             if (!TVCaptureModeParse(value, &gCaptureMode)) {
-                TVPrintError("Invalid capture mode: %s (expected fast|uikit_full|system_full)", optarg ?: "");
+                TVPrintError("Invalid capture mode: %s (expected fast|uikit_full|system_full|auto)", optarg ?: "");
                 exit(EXIT_FAILURE);
             }
             TVLog(@"CLI: Capture mode set to %@", TVCaptureModeName(gCaptureMode));
@@ -1989,6 +2012,50 @@ NS_INLINE void copyRectsFromBackToFront(DirtyRect *rects, int rectCount) {
 #pragma mark - Display Hooks
 
 static std::atomic<int> gInflight(0);
+static std::atomic<uint64_t> gOutputAcceptedFrames(0);
+static std::atomic<uint64_t> gOutputDroppedFrames(0);
+static std::atomic<double> gCurrentOutputFPS(0);
+
+static void tvTrackOutputFrame(BOOL accepted) {
+    static std::atomic<uint64_t> sWindowStartNs(0);
+    static std::atomic<uint64_t> sLastAccepted(0);
+    if (accepted)
+        gOutputAcceptedFrames.fetch_add(1, std::memory_order_relaxed);
+    else
+        gOutputDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+
+    uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+    uint64_t start = sWindowStartNs.load(std::memory_order_relaxed);
+    if (start == 0) {
+        sWindowStartNs.store(now, std::memory_order_relaxed);
+        return;
+    }
+
+    if (now - start < 5ULL * NSEC_PER_SEC)
+        return;
+    if (!sWindowStartNs.compare_exchange_strong(start, now, std::memory_order_acq_rel))
+        return;
+
+    uint64_t frames = gOutputAcceptedFrames.load(std::memory_order_relaxed);
+    uint64_t previous = sLastAccepted.exchange(frames, std::memory_order_relaxed);
+    double seconds = (double)(now - start) / NSEC_PER_SEC;
+    double outputFPS = seconds > 0 ? (double)(frames - previous) / seconds : 0;
+    gCurrentOutputFPS.store(outputFPS, std::memory_order_relaxed);
+    TVLog(@"capture.output backend=%@ outputFPS=%.2f acceptedFrames=%llu droppedFrames=%llu inflight=%d/%d",
+          [CaptureManager sharedManager].activeBackendName, outputFPS, frames,
+          gOutputDroppedFrames.load(std::memory_order_relaxed), gInflight.load(std::memory_order_relaxed),
+          gMaxInflightUpdates);
+}
+
+static NSDictionary *tvCaptureStatus(void) {
+    NSMutableDictionary *status = [[CaptureManager sharedManager].statusSnapshot mutableCopy];
+    status[@"outputFPS"] = @(gCurrentOutputFPS.load(std::memory_order_relaxed));
+    status[@"outputAcceptedFrames"] = @(gOutputAcceptedFrames.load(std::memory_order_relaxed));
+    status[@"droppedFrames"] = @(gOutputDroppedFrames.load(std::memory_order_relaxed));
+    status[@"inFlightFrames"] = @(gInflight.load(std::memory_order_relaxed));
+    status[@"maxInFlightFrames"] = @(gMaxInflightUpdates);
+    return status;
+}
 
 // Track encode life-cycle to provide backpressure via inflight counter
 static void displayHook(rfbClientPtr cl) {
@@ -2287,8 +2354,10 @@ static void handleFramebuffer(CMSampleBufferRef sampleBuffer) {
         // When busy dropping, skip all hashing/dirty work.
         TVLogVerbose(@"drop frame due to inflight=%d >= limit=%d", gInflight.load(std::memory_order_relaxed),
                      gMaxInflightUpdates);
+        tvTrackOutputFrame(NO);
         return;
     }
+    tvTrackOutputFrame(YES);
 
 #if DEBUG
     CFAbsoluteTime __tv_tLock0 = CFAbsoluteTimeGetCurrent();
@@ -3862,6 +3931,175 @@ static NSData *tvCtlTextForKick(NSString *cid, BOOL addToBlocklist) {
     return [NSData dataWithBytes:raw length:strlen(raw)];
 }
 
+static NSData *tvCtlJSONResponse(NSInteger status, NSDictionary *object) {
+    NSError *jsonError = nil;
+    NSData *body = [NSJSONSerialization dataWithJSONObject:object ?: @{} options:0 error:&jsonError];
+    if (!body)
+        body = [@"{\"ok\":false,\"error\":\"json-serialization-failed\"}" dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *reason = @"OK";
+    if (status == 400) reason = @"Bad Request";
+    else if (status == 401) reason = @"Unauthorized";
+    else if (status == 404) reason = @"Not Found";
+    else if (status == 409) reason = @"Conflict";
+    else if (status == 500) reason = @"Internal Server Error";
+    else if (status == 503) reason = @"Service Unavailable";
+    NSString *header = [NSString stringWithFormat:
+        @"HTTP/1.1 %ld %@\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: %lu\r\n"
+         "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+        (long)status, reason, (unsigned long)body.length];
+    NSMutableData *response = [[header dataUsingEncoding:NSUTF8StringEncoding] mutableCopy];
+    [response appendData:body];
+    return response;
+}
+
+static BOOL tvCtlConstantTimeEqual(NSString *left, NSString *right) {
+    NSData *a = [left dataUsingEncoding:NSUTF8StringEncoding] ?: NSData.data;
+    NSData *b = [right dataUsingEncoding:NSUTF8StringEncoding] ?: NSData.data;
+    const uint8_t *ap = (const uint8_t *)a.bytes;
+    const uint8_t *bp = (const uint8_t *)b.bytes;
+    NSUInteger maxLength = MAX(a.length, b.length);
+    uint8_t difference = (uint8_t)(a.length ^ b.length);
+    for (NSUInteger index = 0; index < maxLength; index++)
+        difference |= (index < a.length ? ap[index] : 0) ^ (index < b.length ? bp[index] : 0);
+    return difference == 0;
+}
+
+static NSDictionary *tvCtlParseJSONBody(NSData *body, NSError **error) {
+    if (!body.length)
+        return @{};
+    id object = [NSJSONSerialization JSONObjectWithData:body options:0 error:error];
+    return [object isKindOfClass:NSDictionary.class] ? object : nil;
+}
+
+static NSData *tvCtlHandleHTTPRequest(NSString *method, NSString *path, NSDictionary *headers, NSData *body) {
+    NSString *authorization = headers[@"authorization"];
+    NSString *expected = gControlToken.length ? [@"Bearer " stringByAppendingString:gControlToken] : nil;
+    if (!expected)
+        return tvCtlJSONResponse(503, @{ @"ok" : @NO, @"error" : @"control-token-unconfigured" });
+    if (!tvCtlConstantTimeEqual(authorization ?: @"", expected))
+        return tvCtlJSONResponse(401, @{ @"ok" : @NO, @"error" : @"unauthorized" });
+
+    CaptureManager *capture = CaptureManager.sharedManager;
+    IRDeviceServices *services = IRDeviceServices.sharedServices;
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/health"]) {
+        return tvCtlJSONResponse(200, @{
+            @"ok" : @YES,
+            @"agent" : @"ready",
+            @"vncClients" : @(gClientCount),
+            @"capture" : tvCaptureStatus(),
+            @"supervisorManaged" : @(gIsDaemonMode),
+        });
+    }
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/version"])
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"apiVersion" : @1, @"agentVersion" : @PACKAGE_VERSION });
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/device"]) {
+        NSMutableDictionary *device = [services.deviceInfo mutableCopy];
+        device[@"desktopName"] = gDesktopName ?: @"TrollVNC";
+        device[@"vncPort"] = @(gPort);
+        device[@"controlPort"] = @(gTvCtlPort);
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"device" : device });
+    }
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/capture"])
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"capture" : tvCaptureStatus() });
+    if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/v1/capture"]) {
+        NSError *jsonError = nil;
+        NSDictionary *request = tvCtlParseJSONBody(body, &jsonError);
+        if (!request)
+            return tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : jsonError.localizedDescription ?: @"invalid-json" });
+        NSString *modeName = request[@"mode"];
+        NSError *operationError = nil;
+        if ([modeName isKindOfClass:NSString.class]) {
+            TVCaptureMode mode;
+            if (!TVCaptureModeParse(modeName, &mode))
+                return tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"invalid-capture-mode" });
+            if (![capture setMode:mode error:&operationError])
+                return tvCtlJSONResponse(503, @{ @"ok" : @NO, @"error" : operationError.localizedDescription });
+        }
+        NSNumber *required = request[@"completenessRequired"];
+        if ([required isKindOfClass:NSNumber.class]) {
+            NSTimeInterval lease = [request[@"leaseSeconds"] doubleValue];
+            if (![capture setCompletenessRequired:required.boolValue leaseSeconds:lease error:&operationError])
+                return tvCtlJSONResponse(409, @{ @"ok" : @NO, @"error" : operationError.localizedDescription });
+        }
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"capture" : tvCaptureStatus() });
+    }
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/wifi"])
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"wifi" : services.wifiStatus });
+    if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/v1/wifi"]) {
+        NSError *jsonError = nil;
+        NSDictionary *request = tvCtlParseJSONBody(body, &jsonError);
+        NSNumber *enabled = request[@"enabled"];
+        if (!request || ![enabled isKindOfClass:NSNumber.class])
+            return tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"enabled boolean is required" });
+        NSError *operationError = nil;
+        if (![services setWifiEnabled:enabled.boolValue error:&operationError])
+            return tvCtlJSONResponse(503, @{ @"ok" : @NO, @"error" : operationError.localizedDescription,
+                                             @"wifi" : services.wifiStatus });
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"wifi" : services.wifiStatus });
+    }
+    if ([method isEqualToString:@"GET"] && [path isEqualToString:@"/api/v1/apps"]) {
+        NSError *operationError = nil;
+        NSArray *apps = [services installedApplicationsWithError:&operationError];
+        return apps ? tvCtlJSONResponse(200, @{ @"ok" : @YES, @"apps" : apps })
+                    : tvCtlJSONResponse(503, @{ @"ok" : @NO, @"error" : operationError.localizedDescription });
+    }
+    if ([method isEqualToString:@"POST"] && [path isEqualToString:@"/api/v1/apps/launch"]) {
+        NSError *jsonError = nil;
+        NSDictionary *request = tvCtlParseJSONBody(body, &jsonError);
+        if (!request)
+            return tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : jsonError.localizedDescription ?: @"invalid-json" });
+        NSString *bundleId = request[@"bundleId"];
+        if (![bundleId isKindOfClass:NSString.class] || bundleId.length == 0)
+            return tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"bundleId is required" });
+        NSError *operationError = nil;
+        if (![services launchApplication:bundleId error:&operationError])
+            return tvCtlJSONResponse(503, @{ @"ok" : @NO, @"error" : operationError.localizedDescription ?: @"launch-failed" });
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"bundleId" : bundleId });
+    }
+    if ([method isEqualToString:@"POST"] &&
+        ([path isEqualToString:@"/api/v1/services/vnc/restart"] ||
+         [path isEqualToString:@"/api/v1/services/control/restart"])) {
+        if (!gIsDaemonMode)
+            return tvCtlJSONResponse(409, @{ @"ok" : @NO, @"error" : @"supervisor-unavailable" });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            TVLog(@"control.api serviceRestart=%@ supervisorRecovery=expected", path);
+            exit(EXIT_SUCCESS);
+        });
+        return tvCtlJSONResponse(200, @{ @"ok" : @YES, @"restartScheduled" : @YES, @"service" : path });
+    }
+    return tvCtlJSONResponse(404, @{ @"ok" : @NO, @"error" : @"not-found" });
+}
+
+static BOOL tvCtlIsHTTPRequest(const uint8_t *bytes, size_t length) {
+    if (length < 4)
+        return NO;
+    return !memcmp(bytes, "GET ", 4) || !memcmp(bytes, "POST", 4) || !memcmp(bytes, "PUT ", 4) ||
+           !memcmp(bytes, "DELE", 4);
+}
+
+static size_t tvCtlHTTPExpectedLength(const uint8_t *bytes, size_t length) {
+    NSData *data = [NSData dataWithBytesNoCopy:(void *)bytes length:length freeWhenDone:NO];
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    NSRange separator = [text rangeOfString:@"\r\n\r\n"];
+    if (separator.location == NSNotFound)
+        return SIZE_MAX;
+    NSUInteger bodyOffset = NSMaxRange(separator);
+    NSUInteger contentLength = 0;
+    NSString *headerText = [text substringToIndex:separator.location];
+    for (NSString *line in [headerText componentsSeparatedByString:@"\r\n"]) {
+        if ([line.lowercaseString hasPrefix:@"content-length:"]) {
+            NSString *value = [[line substringFromIndex:[line rangeOfString:@":"].location + 1]
+                stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+            NSScanner *scanner = [NSScanner scannerWithString:value];
+            unsigned long long parsed = 0;
+            if (![scanner scanUnsignedLongLong:&parsed] || !scanner.isAtEnd || parsed > SIZE_MAX - bodyOffset)
+                return SIZE_MAX - 1;
+            contentLength = (NSUInteger)parsed;
+        }
+    }
+    return bodyOffset + contentLength;
+}
+
 static BOOL tvDisconnectAllClients(void) {
     if (!gScreen)
         return NO;
@@ -3888,9 +4126,12 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
     setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    // Read a single line command
-    uint8_t buf[1024];
+    // Accept either the legacy one-line control protocol or one bounded HTTP/1.x request.
+    // The socket is loopback-only and normally reached through usbmux forwarding, but all
+    // management HTTP endpoints still require their per-device bearer token.
+    uint8_t buf[64 * 1024];
     size_t off = 0;
+    BOOL requestTooLarge = NO;
     for (;;) {
         ssize_t n = recv(cfd, buf + off, sizeof(buf) - off, 0);
         if (n < 0) {
@@ -3901,37 +4142,93 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
         if (n == 0)
             break;
         off += (size_t)n;
-        if (off >= sizeof(buf))
+        BOOL isHTTP = tvCtlIsHTTPRequest(buf, off);
+        if (isHTTP) {
+            size_t expected = tvCtlHTTPExpectedLength(buf, off);
+            if (expected != SIZE_MAX && expected > sizeof(buf)) {
+                requestTooLarge = YES;
+                break;
+            }
+            if (expected != SIZE_MAX && off >= expected)
+                break;
+        } else if (memchr(buf, '\n', off)) {
             break;
-        if (memchr(buf, '\n', off))
+        }
+        if (off >= sizeof(buf)) {
+            requestTooLarge = YES;
             break;
+        }
     }
-
-    // Parse command
-    NSString *cmd = [[NSString alloc] initWithBytes:buf length:off encoding:NSUTF8StringEncoding];
-    if (!cmd)
-        cmd = @"";
-    cmd = [cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
 
     NSData *resp = nil;
     BOOL keepOpen = NO;
-    if (cmd.length == 0) {
+    if (requestTooLarge) {
+        resp = tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"request-too-large" });
+    } else if (tvCtlIsHTTPRequest(buf, off)) {
+        NSData *requestData = [NSData dataWithBytes:buf length:off];
+        NSData *separatorData = [@"\r\n\r\n" dataUsingEncoding:NSUTF8StringEncoding];
+        NSRange separator = [requestData rangeOfData:separatorData options:0 range:NSMakeRange(0, requestData.length)];
+        if (separator.location == NSNotFound) {
+            resp = tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"incomplete-http-headers" });
+        } else {
+            NSData *headerData = [requestData subdataWithRange:NSMakeRange(0, separator.location)];
+            NSString *headerText = [[NSString alloc] initWithData:headerData encoding:NSUTF8StringEncoding];
+            NSArray<NSString *> *lines = [headerText componentsSeparatedByString:@"\r\n"];
+            NSArray<NSString *> *requestLine = lines.count
+                                                   ? [lines[0] componentsSeparatedByCharactersInSet:
+                                                                  NSCharacterSet.whitespaceCharacterSet]
+                                                   : @[];
+            NSMutableArray<NSString *> *requestParts = [NSMutableArray array];
+            for (NSString *part in requestLine) {
+                if (part.length)
+                    [requestParts addObject:part];
+            }
+            if (requestParts.count < 3) {
+                resp = tvCtlJSONResponse(400, @{ @"ok" : @NO, @"error" : @"invalid-request-line" });
+            } else {
+                NSMutableDictionary<NSString *, NSString *> *headers = [NSMutableDictionary dictionary];
+                for (NSUInteger i = 1; i < lines.count; i++) {
+                    NSRange colon = [lines[i] rangeOfString:@":"];
+                    if (colon.location == NSNotFound)
+                        continue;
+                    NSString *name = [[lines[i] substringToIndex:colon.location] lowercaseString];
+                    NSString *value = [[lines[i] substringFromIndex:NSMaxRange(colon)]
+                        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+                    if (name.length)
+                        headers[name] = value;
+                }
+                NSUInteger bodyOffset = NSMaxRange(separator);
+                NSData *body = bodyOffset <= requestData.length
+                                   ? [requestData subdataWithRange:NSMakeRange(bodyOffset, requestData.length - bodyOffset)]
+                                   : [NSData data];
+                NSString *path = [requestParts[1] componentsSeparatedByString:@"?"][0];
+                resp = tvCtlHandleHTTPRequest([requestParts[0] uppercaseString], path, headers, body);
+            }
+        }
+    } else {
+        // Preserve the existing local management protocol for current clients.
+        NSString *cmd = [[NSString alloc] initWithBytes:buf length:off encoding:NSUTF8StringEncoding];
+        if (!cmd)
+            cmd = @"";
+        cmd = [cmd stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+        if (cmd.length == 0) {
         resp = [@"ERR Empty\n" dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd isEqualToString:@"count"]) {
+        } else if ([cmd isEqualToString:@"count"]) {
         NSString *s = [NSString stringWithFormat:@"%d\n", gClientCount];
         resp = [s dataUsingEncoding:NSUTF8StringEncoding];
-    } else if ([cmd isEqualToString:@"list"]) {
+        } else if ([cmd isEqualToString:@"list"]) {
         resp = tvCtlTSVForList();
-    } else if ([cmd isEqualToString:@"subscribe on"]) {
+        } else if ([cmd isEqualToString:@"subscribe on"]) {
         tvCtlAddSubscriber(cfd);
         const char *ok = "OK\n";
         resp = [NSData dataWithBytes:ok length:strlen(ok)];
         keepOpen = YES; // keep connection open for pushes
-    } else if ([cmd isEqualToString:@"subscribe off"]) {
+        } else if ([cmd isEqualToString:@"subscribe off"]) {
         tvCtlRemoveSubscriber(cfd, NO);
         const char *ok = "OK\n";
         resp = [NSData dataWithBytes:ok length:strlen(ok)];
-    } else if ([cmd hasPrefix:@"disconnect "] || [cmd hasPrefix:@"kick "] || [cmd hasPrefix:@"block "]) {
+        } else if ([cmd hasPrefix:@"disconnect "] || [cmd hasPrefix:@"kick "] || [cmd hasPrefix:@"block "]) {
         NSArray *parts = [cmd componentsSeparatedByCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
         NSString *cid = parts.count >= 2 ? parts[1] : @"";
         if ([cid isEqualToString:@"ALL"]) {
@@ -3943,8 +4240,9 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
             BOOL shouldBlock = [cmd hasPrefix:@"block "];
             resp = tvCtlTextForKick(cid, shouldBlock);
         }
-    } else {
+        } else {
         resp = [@"ERR Unknown\n" dataUsingEncoding:NSUTF8StringEncoding];
+        }
     }
 
     if (resp)

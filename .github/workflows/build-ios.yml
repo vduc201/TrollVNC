@@ -63,6 +63,8 @@ jobs:
           set -euo pipefail
           plutil -lint prefs/TrollVNCPrefs/Resources/Root.plist
           grep -Fq '/api/v1/health' src/trollvncserver.mm
+          grep -Fq 'IREMOTE 1' src/trollvncserver.mm
+          grep -Fq 'kIRSimpleControlPort = 46753' src/trollvncserver.mm
           grep -Fq 'TVCaptureModeAuto' src/CaptureManager.mm
           source devkit/bootstrap.sh
           FINALPACKAGE=1 gmake clean package
@@ -111,6 +113,8 @@ jobs:
           strings "$agent_executable" > "$validation_dir/agent-strings.txt"
           grep -Fq '/api/v1/health' "$validation_dir/agent-strings.txt"
           grep -Fq '/api/v1/apps/launch' "$validation_dir/agent-strings.txt"
+          grep -Fq 'OK IREMOTE 1' "$validation_dir/agent-strings.txt"
+          grep -Fq 'CAPTURE REQUIRE_FULL' "$validation_dir/agent-strings.txt"
           grep -Fq 'system_full' "$validation_dir/agent-strings.txt"
           ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
           test -s "$validation_dir/entitlements.plist"

@@ -696,6 +696,14 @@ static void parseDaemonOptions(void) {
             gModMapScheme = 0;
     }
 
+    NSString *captureMode = [prefs objectForKey:@"CaptureMode"];
+    if ([captureMode isKindOfClass:[NSString class]] && captureMode.length > 0) {
+        if (!TVCaptureModeParse(captureMode, &gCaptureMode)) {
+            TVLog(@"-daemon: invalid CaptureMode=%@; using fast", captureMode);
+            gCaptureMode = TVCaptureModeFast;
+        }
+    }
+
     // Frame rate spec (validate and normalize)
     NSString *fpsSpec = [prefs objectForKey:@"FrameRateSpec"];
     if ([fpsSpec isKindOfClass:[NSString class]] && fpsSpec.length > 0) {

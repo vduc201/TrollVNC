@@ -318,7 +318,7 @@
 			<key>label</key>
 			<string></string>
 			<key>footerText</key>
-			<string>FAST preserves the original low-latency capture path. FULL is experimental and may include additional visible system UI. Restart TrollVNC after changing this setting.</string>
+			<string>FAST is the original path. UIKIT_FULL uses UIKit. SYSTEM_FULL probes the iOS XCTest system screenshot provider and reports an explicit error if the runtime denies access. Restart TrollVNC after changing this setting.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -336,23 +336,23 @@
 			<key>validValues</key>
 			<array>
 				<string>fast</string>
-				<string>full</string>
-				<string>auto</string>
+				<string>uikit_full</string>
+				<string>system_full</string>
 			</array>
 			<key>validTitles</key>
 			<array>
 				<string>FAST (Original)</string>
-				<string>FULL (Experimental)</string>
-				<string>AUTO (Conservative)</string>
+				<string>UIKIT_FULL (Experimental)</string>
+				<string>SYSTEM_FULL (XCTest probe)</string>
 			</array>
 			<key>shortTitles</key>
 			<array>
 				<string>FAST</string>
-				<string>FULL</string>
-				<string>AUTO</string>
+				<string>UIKIT_FULL</string>
+				<string>SYSTEM_FULL</string>
 			</array>
 			<key>staticTextMessage</key>
-			<string>Use FAST for the stable realtime path. Compare FULL on a physical device when visible system UI is missing. AUTO currently starts on FAST.</string>
+			<string>Compare all three modes on the same physical-device screens. SYSTEM_FULL never silently falls back; inspect capture.backend=system_full logs if it cannot initialize.</string>
 		</dict>
 
 		<!-- Sync Orientation -->

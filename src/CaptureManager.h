@@ -9,8 +9,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 typedef NS_ENUM(NSInteger, TVCaptureMode) {
     TVCaptureModeFast = 0,
-    TVCaptureModeFull,
-    TVCaptureModeAuto,
+    TVCaptureModeUIKitFull,
+    TVCaptureModeSystemFull,
 };
 
 FOUNDATION_EXPORT NSString *TVCaptureModeName(TVCaptureMode mode);

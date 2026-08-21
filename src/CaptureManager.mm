@@ -5,15 +5,16 @@
 #import "FastCaptureBackend.h"
 #import "FullCaptureBackend.h"
 #import "Logging.h"
+#import "SystemFullCaptureBackend.h"
 
 static NSString *const TVCaptureManagerErrorDomain = @"com.82flex.trollvnc.capture";
 
 NSString *TVCaptureModeName(TVCaptureMode mode) {
     switch (mode) {
-    case TVCaptureModeFull:
-        return @"full";
-    case TVCaptureModeAuto:
-        return @"auto";
+    case TVCaptureModeUIKitFull:
+        return @"uikit_full";
+    case TVCaptureModeSystemFull:
+        return @"system_full";
     case TVCaptureModeFast:
     default:
         return @"fast";
@@ -25,10 +26,10 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
     TVCaptureMode parsed;
     if ([normalized isEqualToString:@"fast"])
         parsed = TVCaptureModeFast;
-    else if ([normalized isEqualToString:@"full"])
-        parsed = TVCaptureModeFull;
-    else if ([normalized isEqualToString:@"auto"])
-        parsed = TVCaptureModeAuto;
+    else if ([normalized isEqualToString:@"uikit_full"] || [normalized isEqualToString:@"full"])
+        parsed = TVCaptureModeUIKitFull;
+    else if ([normalized isEqualToString:@"system_full"])
+        parsed = TVCaptureModeSystemFull;
     else
         return NO;
     if (mode)
@@ -38,7 +39,8 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
 
 @implementation CaptureManager {
     id<IScreenCaptureBackend> mFastBackend;
-    id<IScreenCaptureBackend> mFullBackend;
+    id<IScreenCaptureBackend> mUIKitFullBackend;
+    id<IScreenCaptureBackend> mSystemFullBackend;
     id<IScreenCaptureBackend> mActiveBackend;
     TVCaptureMode mMode;
     TVScreenCaptureFrameHandler mFrameHandler;
@@ -59,7 +61,8 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
     if (!self)
         return nil;
     mFastBackend = [[FastCaptureBackend alloc] init];
-    mFullBackend = [[FullCaptureBackend alloc] init];
+    mUIKitFullBackend = [[UIKitFullCaptureBackend alloc] init];
+    mSystemFullBackend = [[SystemFullCaptureBackend alloc] init];
     mMode = TVCaptureModeFast;
     mActiveBackend = mFastBackend;
     return self;
@@ -82,8 +85,15 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
 }
 
 - (id<IScreenCaptureBackend>)backendForMode:(TVCaptureMode)mode {
-    // AUTO begins conservatively on FAST. Evidence-based switching is added in Phase C.
-    return mode == TVCaptureModeFull ? mFullBackend : mFastBackend;
+    switch (mode) {
+    case TVCaptureModeUIKitFull:
+        return mUIKitFullBackend;
+    case TVCaptureModeSystemFull:
+        return mSystemFullBackend;
+    case TVCaptureModeFast:
+    default:
+        return mFastBackend;
+    }
 }
 
 - (BOOL)setMode:(TVCaptureMode)mode error:(NSError **)error {
@@ -115,7 +125,7 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
     NSString *previous = mActiveBackend.backendName;
     mActiveBackend = next;
     mMode = mode;
-    TVLog(@"capture backend switch previous=%@ active=%@ mode=%@", previous, next.backendName,
+    TVLog(@"capture.backend=%@ previous=%@ mode=%@ switch=success", next.backendName, previous,
           TVCaptureModeName(mode));
     return YES;
 }
@@ -134,7 +144,8 @@ BOOL TVCaptureModeParse(NSString *value, TVCaptureMode *mode) {
     mPreferredFps = preferredFps;
     mMaxFps = maxFps;
     [mFastBackend setPreferredFrameRateWithMin:minFps preferred:preferredFps max:maxFps];
-    [mFullBackend setPreferredFrameRateWithMin:minFps preferred:preferredFps max:maxFps];
+    [mUIKitFullBackend setPreferredFrameRateWithMin:minFps preferred:preferredFps max:maxFps];
+    [mSystemFullBackend setPreferredFrameRateWithMin:minFps preferred:preferredFps max:maxFps];
 }
 
 - (void)forceNextFrameUpdate {

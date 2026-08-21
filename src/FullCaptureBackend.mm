@@ -11,11 +11,11 @@
 #import "Logging.h"
 #import "UIScreen+Private.h"
 
-static NSString *const TVFullCaptureErrorDomain = @"com.82flex.trollvnc.capture.full";
+static NSString *const TVFullCaptureErrorDomain = @"com.82flex.trollvnc.capture.uikit_full";
 
 typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
 
-@implementation FullCaptureBackend {
+@implementation UIKitFullCaptureBackend {
     TVCreateScreenImageFunction mCreateScreenImage;
     NSDictionary *mRenderProperties;
     CADisplayLink *mDisplayLink;
@@ -53,7 +53,7 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
 }
 
 - (NSString *)backendName {
-    return @"full";
+    return @"uikit_full";
 }
 
 - (NSDictionary *)renderProperties {
@@ -75,6 +75,7 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
                                          code:1
                                      userInfo:@{NSLocalizedDescriptionKey : @"_UICreateScreenUIImage is unavailable"}];
         }
+        TVLog(@"capture.backend=uikit_full initialization=failed reason=_UICreateScreenUIImage_unavailable");
         return NO;
     }
 
@@ -94,6 +95,7 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
         startBlock();
     else
         dispatch_sync(dispatch_get_main_queue(), startBlock);
+    TVLog(@"capture.backend=uikit_full initialization=success provider=_UICreateScreenUIImage");
     return YES;
 }
 
@@ -126,7 +128,7 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
 }
 
 - (void)forceNextFrameUpdate {
-    // Full capture emits every successful frame, so no dirty flag is needed.
+    // UIKIT_FULL emits every successful frame, so no dirty flag is needed.
 }
 
 - (void)applyFrameRate {
@@ -153,7 +155,7 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
     UIImage *image = mCreateScreenImage();
     CGImageRef cgImage = image.CGImage;
     if (!cgImage) {
-        TVLog(@"capture.full frame failed: screen image is empty");
+        TVLog(@"capture.backend=uikit_full frameFailure=empty_image");
         return;
     }
 
@@ -212,7 +214,8 @@ typedef UIImage *_Nullable (*TVCreateScreenImageFunction)(void);
     static uint64_t lastLog = 0;
     uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
     if (lastLog == 0 || now - lastLog >= 5ULL * 1000000000ULL) {
-        TVLog(@"capture.full durationMs=%.2f frameWidth=%zu frameHeight=%zu", durationMs, width, height);
+        TVLog(@"capture.backend=uikit_full durationMs=%.2f frameWidth=%zu frameHeight=%zu", durationMs, width,
+              height);
         lastLog = now;
     }
 }

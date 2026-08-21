@@ -310,7 +310,7 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Display/Perf:\n");
     fprintf(stderr, "  -s scale   Output scale 0<s<=1 (default: %.2f)\n", gScale);
     fprintf(stderr, "  -F spec    Frame rate: fps | min-max | min:pref:max\n");
-    fprintf(stderr, "  -X mode    Capture backend: fast|full|auto (default: fast)\n");
+    fprintf(stderr, "  -X mode    Capture backend: fast|uikit_full|system_full (default: fast)\n");
     fprintf(stderr, "  -d sec     Defer window (0..0.5, default: %.3f)\n", gDeferWindowSec);
     fprintf(stderr, "  -Q n       Max in-flight encodes (0=never drop, default: %d)\n\n", gMaxInflightUpdates);
 
@@ -1274,7 +1274,7 @@ static void parseCLI(int argc, const char *argv[]) {
         case 'X': {
             NSString *value = [NSString stringWithUTF8String:optarg ?: ""];
             if (!TVCaptureModeParse(value, &gCaptureMode)) {
-                TVPrintError("Invalid capture mode: %s (expected fast|full|auto)", optarg ?: "");
+                TVPrintError("Invalid capture mode: %s (expected fast|uikit_full|system_full)", optarg ?: "");
                 exit(EXIT_FAILURE);
             }
             TVLog(@"CLI: Capture mode set to %@", TVCaptureModeName(gCaptureMode));

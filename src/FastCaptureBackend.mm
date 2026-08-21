@@ -3,6 +3,7 @@
 #import "FastCaptureBackend.h"
 
 #import "ScreenCapturer.h"
+#import "Logging.h"
 
 @implementation FastCaptureBackend {
     BOOL mCapturing;
@@ -28,6 +29,7 @@
     (void)error;
     [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:frameHandler];
     mCapturing = YES;
+    TVLog(@"capture.backend=fast initialization=success provider=CARenderServerRenderDisplay");
     return YES;
 }
 

@@ -105,9 +105,12 @@ jobs:
           lipo -info "$executable" | tee "$validation_dir/executable-architectures.txt"
           lipo -archs "$executable" | grep -qw arm64
           otool -L "$executable" | tee "$validation_dir/runtime-dependencies.txt"
-          strings "$executable" | grep -Fq '/api/v1/health'
-          strings "$executable" | grep -Fq '/api/v1/apps/launch'
-          strings "$executable" | grep -Fq 'system_full'
+          agent_executable="$app/trollvncserver"
+          test -x "$agent_executable"
+          file "$agent_executable" | grep -Eq 'Mach-O 64-bit.*arm64|Mach-O universal binary.*arm64'
+          strings "$agent_executable" | grep -Fq '/api/v1/health'
+          strings "$agent_executable" | grep -Fq '/api/v1/apps/launch'
+          strings "$agent_executable" | grep -Fq 'system_full'
           ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
           test -s "$validation_dir/entitlements.plist"
           plutil -lint "$validation_dir/entitlements.plist"

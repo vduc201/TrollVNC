@@ -108,9 +108,10 @@ jobs:
           agent_executable="$app/trollvncserver"
           test -x "$agent_executable"
           file "$agent_executable" | grep -Eq 'Mach-O 64-bit.*arm64|Mach-O universal binary.*arm64'
-          strings "$agent_executable" | grep -Fq '/api/v1/health'
-          strings "$agent_executable" | grep -Fq '/api/v1/apps/launch'
-          strings "$agent_executable" | grep -Fq 'system_full'
+          strings "$agent_executable" > "$validation_dir/agent-strings.txt"
+          grep -Fq '/api/v1/health' "$validation_dir/agent-strings.txt"
+          grep -Fq '/api/v1/apps/launch' "$validation_dir/agent-strings.txt"
+          grep -Fq 'system_full' "$validation_dir/agent-strings.txt"
           ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
           test -s "$validation_dir/entitlements.plist"
           plutil -lint "$validation_dir/entitlements.plist"

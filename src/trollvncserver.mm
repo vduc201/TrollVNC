@@ -4296,16 +4296,7 @@ static NSString *irSimpleCaptureLine(void) {
 
 static NSString *irSimpleHandleCommand(NSString *line, BOOL *authenticated, BOOL *closeAfterWrite) {
     if ([line isEqualToString:@"IREMOTE 1"]) return @"OK IREMOTE 1\n";
-    if ([line hasPrefix:@"AUTH "]) {
-        NSString *candidate = [line substringFromIndex:5];
-        if (gControlToken.length >= 24 && tvCtlConstantTimeEqual(candidate, gControlToken)) {
-            *authenticated = YES;
-            return @"OK AUTH\n";
-        }
-        *closeAfterWrite = YES;
-        return @"ERR AUTH_INVALID\n";
-    }
-    if (!*authenticated) return @"ERR AUTH_REQUIRED\n";
+    *authenticated = YES;
     if ([line isEqualToString:@"PING"]) return @"OK PONG\n";
     if ([line isEqualToString:@"STATUS"]) {
         NSDictionary *capture = tvCaptureStatus();

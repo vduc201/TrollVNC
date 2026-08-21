@@ -158,6 +158,30 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>iRemote Control API</string>
+			<key>footerText</key>
+			<string>Per-device bearer token used by iRemote over the USB-forwarded control channel. Use at least 24 characters. It is never written to logs.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSecureEditTextCell</string>
+			<key>defaults</key>
+			<string>com.82flex.trollvnc</string>
+			<key>key</key>
+			<string>ControlToken</string>
+			<key>label</key>
+			<string>Control API Token</string>
+			<key>placeholder</key>
+			<string>24 characters minimum</string>
+			<key>noAutoCorrect</key>
+			<true/>
+		</dict>
+
+		<!-- Clipboard Sync -->
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string></string>
 			<key>footerText</key>
 			<string>Syncs text clipboard with VNC clients while connected. Disable if you do not want remote clipboard access.</string>
@@ -330,7 +354,7 @@
 			<key>label</key>
 			<string>Capture Mode</string>
 			<key>default</key>
-			<string>fast</string>
+			<string>auto</string>
 			<key>detail</key>
 			<string>TVNCListItemsController</string>
 			<key>validValues</key>
@@ -338,21 +362,24 @@
 				<string>fast</string>
 				<string>uikit_full</string>
 				<string>system_full</string>
+				<string>auto</string>
 			</array>
 			<key>validTitles</key>
 			<array>
 				<string>FAST (Original)</string>
 				<string>UIKIT_FULL (Experimental)</string>
 				<string>SYSTEM_FULL (XCTest probe)</string>
+				<string>AUTO (FAST + completeness lease)</string>
 			</array>
 			<key>shortTitles</key>
 			<array>
 				<string>FAST</string>
 				<string>UIKIT_FULL</string>
 				<string>SYSTEM_FULL</string>
+				<string>AUTO</string>
 			</array>
 			<key>staticTextMessage</key>
-			<string>Compare all three modes on the same physical-device screens. SYSTEM_FULL never silently falls back; inspect capture.backend=system_full logs if it cannot initialize.</string>
+			<string>AUTO stays on FAST until the authenticated control client requests a bounded completeness lease, then uses SYSTEM_FULL with dwell/cooldown and FAST fallback.</string>
 		</dict>
 
 		<!-- Sync Orientation -->

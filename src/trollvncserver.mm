@@ -69,6 +69,7 @@ int gOrientationFixQuad = 0; // 0=0°, 1=90°CW, 2=180°, 3=270°CW
 static BOOL gEnabled = YES;
 static int gPort = 5901;
 static int gTvCtlPort = 0;        // port for control connections (0 = disabled)
+static const int kIRSimpleControlPort = 46753;
 static NSString *gBindHost = nil; // optional bind address from CLI/config
 static NSString *gDesktopName = @"TrollVNC";
 static BOOL gViewOnly = NO;
@@ -3554,6 +3555,8 @@ static void startBonjour(void) {
 
 static int gTvCtlListenFd = -1;
 static dispatch_source_t gTvCtlAcceptSource = NULL;
+static int gIRSimpleListenFd = -1;
+static dispatch_source_t gIRSimpleAcceptSource = NULL;
 
 // Number of connected clients
 static int gClientCount = 0;
@@ -3604,6 +3607,14 @@ static int tvSetNonBlocking(int fd) {
 }
 
 static void tvStopControlSocket(void) {
+    if (gIRSimpleAcceptSource) {
+        dispatch_source_cancel(gIRSimpleAcceptSource);
+        gIRSimpleAcceptSource = NULL;
+    }
+    if (gIRSimpleListenFd >= 0) {
+        close(gIRSimpleListenFd);
+        gIRSimpleListenFd = -1;
+    }
     if (gTvCtlAcceptSource) {
         dispatch_source_cancel(gTvCtlAcceptSource);
         gTvCtlAcceptSource = NULL;
@@ -4254,6 +4265,213 @@ void tvCtlHandleConnection(int cfd, struct sockaddr_in caddr) {
     }
 
     close(cfd);
+}
+
+#pragma mark - iRemote Simple Control v1
+
+static NSString *irSimpleEscape(NSString *value) {
+    NSMutableString *escaped = [value ?: @"" mutableCopy];
+    [escaped replaceOccurrencesOfString:@"\\" withString:@"\\\\" options:0 range:NSMakeRange(0, escaped.length)];
+    [escaped replaceOccurrencesOfString:@"\t" withString:@"\\t" options:0 range:NSMakeRange(0, escaped.length)];
+    [escaped replaceOccurrencesOfString:@"\r" withString:@"\\r" options:0 range:NSMakeRange(0, escaped.length)];
+    [escaped replaceOccurrencesOfString:@"\n" withString:@"\\n" options:0 range:NSMakeRange(0, escaped.length)];
+    return escaped;
+}
+
+static NSString *irSimpleWifiLine(NSDictionary *wifi) {
+    if (![wifi[@"supported"] boolValue]) return @"OK WIFI UNSUPPORTED\n";
+    NSString *state = [wifi[@"state"] uppercaseString] ?: @"UNKNOWN";
+    if (![state isEqualToString:@"ON"] && ![state isEqualToString:@"OFF"]) state = @"UNKNOWN";
+    return [NSString stringWithFormat:@"OK WIFI %@\n", state];
+}
+
+static NSString *irSimpleCaptureLine(void) {
+    NSDictionary *status = tvCaptureStatus();
+    return [NSString stringWithFormat:@"OK CAPTURE CONFIGURED=%@ ACTIVE=%@ FPS=%.2f DROPPED=%llu\n",
+        [status[@"configuredMode"] uppercaseString] ?: @"UNKNOWN",
+        [status[@"activeBackend"] uppercaseString] ?: @"UNKNOWN",
+        [status[@"outputFPS"] doubleValue],
+        [status[@"droppedFrames"] unsignedLongLongValue]];
+}
+
+static NSString *irSimpleHandleCommand(NSString *line, BOOL *authenticated, BOOL *closeAfterWrite) {
+    if ([line isEqualToString:@"IREMOTE 1"]) return @"OK IREMOTE 1\n";
+    if ([line hasPrefix:@"AUTH "]) {
+        NSString *candidate = [line substringFromIndex:5];
+        if (gControlToken.length >= 24 && tvCtlConstantTimeEqual(candidate, gControlToken)) {
+            *authenticated = YES;
+            return @"OK AUTH\n";
+        }
+        *closeAfterWrite = YES;
+        return @"ERR AUTH_INVALID\n";
+    }
+    if (!*authenticated) return @"ERR AUTH_REQUIRED\n";
+    if ([line isEqualToString:@"PING"]) return @"OK PONG\n";
+    if ([line isEqualToString:@"STATUS"]) {
+        NSDictionary *capture = tvCaptureStatus();
+        NSDictionary *wifi = IRDeviceServices.sharedServices.wifiStatus;
+        NSString *wifiState = [wifi[@"supported"] boolValue] ? ([wifi[@"state"] uppercaseString] ?: @"UNKNOWN") : @"UNSUPPORTED";
+        return [NSString stringWithFormat:@"OK STATUS VERSION=%s VNC=%@ CAPTURE=%@ ACTIVE=%@ WIFI=%@\n",
+            PACKAGE_VERSION, gClientCount > 0 ? @"CONNECTED" : @"READY",
+            [capture[@"configuredMode"] uppercaseString] ?: @"UNKNOWN",
+            [capture[@"activeBackend"] uppercaseString] ?: @"UNKNOWN", wifiState];
+    }
+    if ([line isEqualToString:@"WIFI GET"]) return irSimpleWifiLine(IRDeviceServices.sharedServices.wifiStatus);
+    if ([line isEqualToString:@"WIFI ON"] || [line isEqualToString:@"WIFI OFF"]) {
+        BOOL desired = [line hasSuffix:@"ON"];
+        IRDeviceServices *services = IRDeviceServices.sharedServices;
+        NSDictionary *before = services.wifiStatus;
+        if (![before[@"supported"] boolValue]) return @"ERR WIFI_UNSUPPORTED\n";
+        NSError *error = nil;
+        if (![services setWifiEnabled:desired error:&error]) {
+            return [error.localizedDescription isEqualToString:@"wifi-state-verification-failed"]
+                ? @"ERR WIFI_VERIFY_FAILED\n" : @"ERR WIFI_CHANGE_FAILED\n";
+        }
+        NSDictionary *verified = services.wifiStatus;
+        BOOL matches = [verified[@"supported"] boolValue] &&
+            [verified[@"state"] isEqualToString:(desired ? @"on" : @"off")];
+        return matches ? irSimpleWifiLine(verified) : @"ERR WIFI_VERIFY_FAILED\n";
+    }
+    if ([line isEqualToString:@"APP LIST"]) {
+        NSError *error = nil;
+        NSArray<NSDictionary *> *apps = [IRDeviceServices.sharedServices installedApplicationsWithError:&error];
+        if (!apps) return @"ERR APP_LIST_FAILED\n";
+        NSUInteger count = MIN(apps.count, (NSUInteger)4096);
+        NSMutableString *output = [NSMutableString stringWithFormat:@"BEGIN APPS %lu\n", (unsigned long)count];
+        for (NSUInteger index = 0; index < count; index++) {
+            NSDictionary *app = apps[index];
+            [output appendFormat:@"APP\t%@\t%@\t%@\n", irSimpleEscape(app[@"bundleId"]),
+                irSimpleEscape(app[@"name"]), irSimpleEscape(app[@"type"])];
+            if ([output lengthOfBytesUsingEncoding:NSUTF8StringEncoding] > 2 * 1024 * 1024)
+                return @"ERR APP_LIST_TOO_LARGE\n";
+        }
+        [output appendString:@"END APPS\n"];
+        return output;
+    }
+    if ([line hasPrefix:@"APP OPEN "]) {
+        NSString *bundleId = [line substringFromIndex:9];
+        if (!bundleId.length || [bundleId rangeOfCharacterFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet].location != NSNotFound)
+            return @"ERR INVALID_COMMAND\n";
+        NSError *listError = nil;
+        NSArray<NSDictionary *> *apps = [IRDeviceServices.sharedServices installedApplicationsWithError:&listError];
+        BOOL installed = NO;
+        for (NSDictionary *app in apps) if ([app[@"bundleId"] isEqualToString:bundleId]) { installed = YES; break; }
+        if (!installed) return @"ERR APP_NOT_INSTALLED\n";
+        NSError *launchError = nil;
+        return [IRDeviceServices.sharedServices launchApplication:bundleId error:&launchError]
+            ? [NSString stringWithFormat:@"OK APP OPEN %@\n", bundleId] : @"ERR APP_LAUNCH_FAILED\n";
+    }
+    if ([line isEqualToString:@"CAPTURE GET"]) return irSimpleCaptureLine();
+    if ([line hasPrefix:@"CAPTURE SET "]) {
+        NSString *modeName = [[line substringFromIndex:12] lowercaseString];
+        TVCaptureMode mode;
+        if (!TVCaptureModeParse(modeName, &mode)) return @"ERR INVALID_CAPTURE_MODE\n";
+        NSError *error = nil;
+        if (![CaptureManager.sharedManager setMode:mode error:&error]) return @"ERR CAPTURE_UNAVAILABLE\n";
+        return irSimpleCaptureLine();
+    }
+    if ([line hasPrefix:@"CAPTURE REQUIRE_FULL "]) {
+        NSString *secondsText = [line substringFromIndex:21];
+        NSScanner *scanner = [NSScanner scannerWithString:secondsText];
+        double seconds = 0;
+        if (![scanner scanDouble:&seconds] || !scanner.isAtEnd || seconds < 8 || seconds > 300)
+            return @"ERR INVALID_LEASE\n";
+        NSError *error = nil;
+        if (![CaptureManager.sharedManager setCompletenessRequired:YES leaseSeconds:seconds error:&error])
+            return @"ERR CAPTURE_UNAVAILABLE\n";
+        return irSimpleCaptureLine();
+    }
+    if ([line isEqualToString:@"VNC RESTART"]) {
+        if (!gIsDaemonMode) return @"ERR VNC_RESTART_FAILED\n";
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+            TVLog(@"simple.control vncRestart=scheduled supervisorRecovery=expected");
+            exit(EXIT_SUCCESS);
+        });
+        return @"OK VNC RESTARTING\n";
+    }
+    if (!line.length) return @"ERR INVALID_COMMAND\n";
+    return @"ERR UNKNOWN_COMMAND\n";
+}
+
+static BOOL irSimpleReadLine(int fd, NSMutableData *buffer, NSString **lineOut) {
+    static const NSUInteger maxLineBytes = 4096;
+    for (;;) {
+        const uint8_t *bytes = (const uint8_t *)buffer.bytes;
+        for (NSUInteger index = 0; index < buffer.length; index++) {
+            if (bytes[index] != '\n') continue;
+            NSData *lineData = [buffer subdataWithRange:NSMakeRange(0, index)];
+            [buffer replaceBytesInRange:NSMakeRange(0, index + 1) withBytes:NULL length:0];
+            NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
+            if (!line) return NO;
+            if ([line hasSuffix:@"\r"]) line = [line substringToIndex:line.length - 1];
+            *lineOut = line;
+            return YES;
+        }
+        if (buffer.length >= maxLineBytes) { *lineOut = @"__TOO_LONG__"; return YES; }
+        uint8_t chunk[1024];
+        ssize_t count = recv(fd, chunk, sizeof(chunk), 0);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) return NO;
+        [buffer appendBytes:chunk length:(NSUInteger)count];
+    }
+}
+
+static void irSimpleHandleConnection(int cfd) {
+    struct timeval timeout = { .tv_sec = 120, .tv_usec = 0 };
+    setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    int keepAlive = 1;
+    setsockopt(cfd, SOL_SOCKET, SO_KEEPALIVE, &keepAlive, sizeof(keepAlive));
+    NSMutableData *buffer = [NSMutableData dataWithCapacity:1024];
+    BOOL authenticated = NO;
+    for (;;) {
+        @autoreleasepool {
+            NSString *line = nil;
+            if (!irSimpleReadLine(cfd, buffer, &line)) break;
+            NSString *response = nil;
+            BOOL closeAfterWrite = NO;
+            if ([line isEqualToString:@"__TOO_LONG__"]) { response = @"ERR INVALID_COMMAND\n"; closeAfterWrite = YES; }
+            else response = irSimpleHandleCommand(line, &authenticated, &closeAfterWrite);
+            NSData *data = [response dataUsingEncoding:NSUTF8StringEncoding];
+            tvCtlWriteAll(cfd, data.bytes, data.length);
+            if (closeAfterWrite) break;
+        }
+    }
+    close(cfd);
+}
+
+static void irStartSimpleControlSocket(void) {
+    if (gIRSimpleAcceptSource || isRepeaterEnabled()) return;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) { TVPrintError("Simple Control: socket failed: %s", strerror(errno)); return; }
+    int yes = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+#ifdef SO_NOSIGPIPE
+    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, sizeof(yes));
+#endif
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)kIRSimpleControlPort);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 8) < 0 || tvSetNonBlocking(fd) < 0) {
+        TVPrintError("Simple Control: bind/listen 127.0.0.1:%d failed: %s", kIRSimpleControlPort, strerror(errno));
+        close(fd);
+        return;
+    }
+    gIRSimpleListenFd = fd;
+    dispatch_queue_t acceptQueue = dispatch_queue_create("com.82flex.trollvnc.simple-control.accept", DISPATCH_QUEUE_SERIAL);
+    gIRSimpleAcceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, acceptQueue);
+    dispatch_source_set_event_handler(gIRSimpleAcceptSource, ^{
+        for (;;) {
+            int cfd = accept(fd, NULL, NULL);
+            if (cfd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) break; else break; }
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ irSimpleHandleConnection(cfd); });
+        }
+    });
+    dispatch_resume(gIRSimpleAcceptSource);
+    TVLog(@"Simple Control listening on 127.0.0.1:%d protocol=1", kIRSimpleControlPort);
 }
 
 #pragma mark - User Notifications
@@ -5473,6 +5691,7 @@ int main(int argc, const char *argv[]) {
         installTerminationHandlers();
 
         tvStartControlSocketIfNeeded();
+        irStartSimpleControlSocket();
     }
 
     CFRunLoopRun();

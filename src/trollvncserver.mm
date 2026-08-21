@@ -43,6 +43,7 @@
 #import <vector>
 
 #import "BulletinManager.h"
+#import "CaptureManager.h"
 #import "ClipboardManager.h"
 #import "Control.h"
 #import "FBSOrientationObserver.h"
@@ -50,7 +51,6 @@
 #import "Logging.h"
 #import "PSAssistiveTouchSettingsDetail.h"
 #import "STHIDEventGenerator.h"
-#import "ScreenCapturer.h"
 
 #define LocalizedString(key, comment, bundle, table)                                                                   \
     (NSLocalizedStringFromTableInBundle((key), (table), (bundle), (comment)) ?: (key))
@@ -106,6 +106,7 @@ static BOOL gAutoAssistEnabled = NO;
 static BOOL gCursorEnabled = NO;
 static BOOL gKeyEventLogging = NO;
 static BOOL gOrientationSyncEnabled = YES;
+static TVCaptureMode gCaptureMode = TVCaptureModeFast;
 
 // Classic VNC authentication
 static char **gAuthPasswdVec = NULL;        // owns the vector
@@ -309,6 +310,7 @@ static void printUsageAndExit(const char *prog) {
     fprintf(stderr, "Display/Perf:\n");
     fprintf(stderr, "  -s scale   Output scale 0<s<=1 (default: %.2f)\n", gScale);
     fprintf(stderr, "  -F spec    Frame rate: fps | min-max | min:pref:max\n");
+    fprintf(stderr, "  -X mode    Capture backend: fast|full|auto (default: fast)\n");
     fprintf(stderr, "  -d sec     Defer window (0..0.5, default: %.3f)\n", gDeferWindowSec);
     fprintf(stderr, "  -Q n       Max in-flight encodes (0=never drop, default: %d)\n\n", gMaxInflightUpdates);
 
@@ -1117,7 +1119,7 @@ static void parseCLI(int argc, const char *argv[]) {
 #pragma clang diagnostic pop
 
     int opt;
-    const char *optstr = "p:b:n:vA:c:C:s:F:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
+    const char *optstr = "p:b:n:vA:c:C:s:F:X:d:Q:t:P:R:aW:w:NM:KU:O:o:I:i:H:D:e:k:B:T:Vh";
     optind = 1;
     while ((opt = getopt(__argc2, __argv2.data(), optstr)) != -1) {
         switch (opt) {
@@ -1259,6 +1261,15 @@ static void parseCLI(int argc, const char *argv[]) {
             gFpsPref = prefV;
             gFpsMax = maxV;
             TVLog(@"CLI: FPS preference set to min=%d pref=%d max=%d", gFpsMin, gFpsPref, gFpsMax);
+            break;
+        }
+        case 'X': {
+            NSString *value = [NSString stringWithUTF8String:optarg ?: ""];
+            if (!TVCaptureModeParse(value, &gCaptureMode)) {
+                TVPrintError("Invalid capture mode: %s (expected fast|full|auto)", optarg ?: "");
+                exit(EXIT_FAILURE);
+            }
+            TVLog(@"CLI: Capture mode set to %@", TVCaptureModeName(gCaptureMode));
             break;
         }
         case 'd': {
@@ -1988,7 +1999,7 @@ static int setDesktopSizeHook(int width, int height, int numScreens, rfbExtDeskt
     (void)cl;
     (void)numScreens;
     (void)extDesktopScreens;
-    [[ScreenCapturer sharedCapturer] forceNextFrameUpdate];
+    [[CaptureManager sharedManager] forceNextFrameUpdate];
     // We do not support client-initiated resizing
     return rfbExtDesktopSize_ResizeProhibited;
 }
@@ -4057,7 +4068,7 @@ static void clientGoneHook(rfbClientPtr cl) {
     TVLog(@"Client %@ disconnected, active clients=%d", host, gClientCount);
 
     if (gIsCaptureStarted && gClientCount == 0) {
-        [[ScreenCapturer sharedCapturer] endCapture];
+        [[CaptureManager sharedManager] endCapture];
         gIsCaptureStarted = NO;
         TVLog(@"No clients remaining; screen capture stopped.");
     }
@@ -4157,7 +4168,12 @@ static enum rfbNewClientAction newClientHook(rfbClientPtr cl) {
     if (!gIsCaptureStarted && gClientCount > 0 && gFrameHandler) {
         // Start capture when entering non-zero client population.
         gIsCaptureStarted = YES;
-        [[ScreenCapturer sharedCapturer] startCaptureWithFrameHandler:gFrameHandler];
+        NSError *captureError = nil;
+        if (![[CaptureManager sharedManager] startCaptureWithFrameHandler:gFrameHandler error:&captureError]) {
+            gIsCaptureStarted = NO;
+            TVPrintError("Screen capture failed: %s", captureError.localizedDescription.UTF8String);
+            return RFB_CLIENT_REFUSE;
+        }
         TVLog(@"Screen capture started (clients=%d).", gClientCount);
     }
 
@@ -4412,10 +4428,16 @@ static void prepareClipboardManager(void) {
 }
 
 static void prepareScreenCapturer(void) {
+    NSError *modeError = nil;
+    if (![[CaptureManager sharedManager] setMode:gCaptureMode error:&modeError]) {
+        TVPrintError("Capture mode unavailable: %s", modeError.localizedDescription.UTF8String);
+        exit(EXIT_FAILURE);
+    }
+
     // Apply preferred frame rate (if provided)
     if (gFpsMin > 0 || gFpsPref > 0 || gFpsMax > 0) {
         TVLog(@"Applying preferred FPS to ScreenCapturer: min=%d pref=%d max=%d", gFpsMin, gFpsPref, gFpsMax);
-        [[ScreenCapturer sharedCapturer] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
+        [[CaptureManager sharedManager] setPreferredFrameRateWithMin:gFpsMin preferred:gFpsPref max:gFpsMax];
     }
 
     gFrameHandler = ^(CMSampleBufferRef _Nonnull sampleBuffer) {
@@ -4429,7 +4451,7 @@ static void prepareBulletinManager(void) {
 }
 
 static void setupGeometry(void) {
-    NSDictionary *props = [[ScreenCapturer sharedCapturer] renderProperties];
+    NSDictionary *props = [[CaptureManager sharedManager] renderProperties];
     gSrcWidth = [props[(__bridge NSString *)kIOSurfaceWidth] intValue];
     gSrcHeight = [props[(__bridge NSString *)kIOSurfaceHeight] intValue];
     if (gSrcWidth <= 0 || gSrcHeight <= 0) {

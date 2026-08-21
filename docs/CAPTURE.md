@@ -16,7 +16,9 @@ trollvncserver -p 5901 -X uikit_full
 trollvncserver -p 5901 -X system_full
 ```
 
-The default stays `fast`. There is no AUTO mode in this test build.
+The default stays `fast`. Phase C adds `auto`: it remains on FAST until an authenticated control client requests a bounded completeness lease. AUTO then switches to SYSTEM_FULL, enforces an 8-second minimum dwell and a 3-second switch cooldown, and returns to FAST when the lease expires. UIKIT_FULL is never selected automatically.
+
+AUTO uses an explicit completeness signal because FAST continues producing valid-looking frames even when iOS omits secure system layers; guessing completeness from FPS or pixel differences would be unreliable. Backend switches preserve the existing RFB/input/clipboard objects and are rejected if source geometry or pixel format differs. SYSTEM_FULL initialization failure rolls back to FAST.
 
 ## SYSTEM_FULL runtime constraint
 

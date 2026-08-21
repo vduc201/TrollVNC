@@ -61,6 +61,9 @@ jobs:
       - name: Clean, compile, and package
         run: |
           set -euo pipefail
+          plutil -lint prefs/TrollVNCPrefs/Resources/Root.plist
+          grep -Fq '/api/v1/health' src/trollvncserver.mm
+          grep -Fq 'TVCaptureModeAuto' src/CaptureManager.mm
           source devkit/bootstrap.sh
           FINALPACKAGE=1 gmake clean package
 
@@ -102,6 +105,9 @@ jobs:
           lipo -info "$executable" | tee "$validation_dir/executable-architectures.txt"
           lipo -archs "$executable" | grep -qw arm64
           otool -L "$executable" | tee "$validation_dir/runtime-dependencies.txt"
+          strings "$executable" | grep -Fq '/api/v1/health'
+          strings "$executable" | grep -Fq '/api/v1/apps/launch'
+          strings "$executable" | grep -Fq 'system_full'
           ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
           test -s "$validation_dir/entitlements.plist"
           plutil -lint "$validation_dir/entitlements.plist"

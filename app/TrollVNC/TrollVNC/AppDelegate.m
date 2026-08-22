@@ -35,8 +35,17 @@
         TVNCRestartBundledServices();
         [defaults setObject:build forKey:@"iRemoteAgentDaemonBuild"];
         [defaults synchronize];
+
+        // The old manager can take a moment to release its inherited server.
+        // Start the monitor after that exit window so it launches the binaries
+        // from the newly installed bundle rather than retaining the old inode.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
+        });
+    } else {
+        [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
     }
-    [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
     [[TVNCHotspotManager sharedManager] registerWithName:@"TrollVNC"];
 
 #ifdef THEBOOTSTRAP

@@ -23,6 +23,7 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
     CFArrayRef (*mWifiCopyDevices)(void *);
     int (*mWifiGetPower)(void *);
     void (*mWifiSetPower)(void *, int);
+    void (*mWifiSetProperty)(void *, CFStringRef, CFPropertyListRef);
     NSString *mWifiError;
 }
 
@@ -57,7 +58,9 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
         mWifiGetPower = (int (*)(void *))dlsym(mWifiHandle, "WiFiDeviceClientGetPower");
     if (!mWifiSetPower)
         mWifiSetPower = (void (*)(void *, int))dlsym(mWifiHandle, "WiFiDeviceClientSetPower");
-    if (!mWifiCreate || !mWifiCopyDevices || !mWifiGetPower || !mWifiSetPower) {
+    if (!mWifiSetProperty)
+        mWifiSetProperty = (void (*)(void *, CFStringRef, CFPropertyListRef))dlsym(mWifiHandle, "WiFiManagerClientSetProperty");
+    if (!mWifiCreate || !mWifiCopyDevices || !mWifiGetPower || (!mWifiSetPower && !mWifiSetProperty)) {
         mWifiError = @"mobilewifi-symbols-unavailable";
         return NO;
     }
@@ -116,7 +119,10 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
                                       userInfo:@{NSLocalizedDescriptionKey : mWifiError}];
         return NO;
     }
-    mWifiSetPower(mWifiDevice, enabled ? 1 : 0);
+    if (mWifiSetProperty)
+        mWifiSetProperty(mWifiManager, CFSTR("AllowEnable"), enabled ? kCFBooleanTrue : kCFBooleanFalse);
+    if (mWifiSetPower)
+        mWifiSetPower(mWifiDevice, enabled ? 1 : 0);
     BOOL actual = mWifiGetPower(mWifiDevice) != 0;
     for (NSUInteger attempt = 0; attempt < 20 && actual != enabled; attempt++) {
         usleep(100000);

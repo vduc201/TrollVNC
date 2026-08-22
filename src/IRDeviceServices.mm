@@ -35,9 +35,6 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
 
 - (instancetype)init {
     self = [super init];
-    if (!self)
-        return nil;
-    [self prepareWifi];
     return self;
 }
 
@@ -84,12 +81,25 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
 }
 
 - (NSDictionary *)wifiStatus {
+    if (![NSThread isMainThread]) {
+        __block NSDictionary *status = nil;
+        dispatch_sync(dispatch_get_main_queue(), ^{ status = [self wifiStatus]; });
+        return status;
+    }
     if (![self prepareWifi])
         return @{ @"supported" : @NO, @"state" : @"unknown", @"reason" : mWifiError };
     return @{ @"supported" : @YES, @"state" : mWifiGetPower(mWifiDevice) ? @"on" : @"off" };
 }
 
 - (BOOL)setWifiEnabled:(BOOL)enabled error:(NSError **)error {
+    if (![NSThread isMainThread]) {
+        __block BOOL result = NO;
+        __block NSError *mainError = nil;
+        dispatch_sync(dispatch_get_main_queue(), ^{ result = [self setWifiEnabled:enabled error:&mainError]; });
+        if (!result && error)
+            *error = mainError;
+        return result;
+    }
     if (![self prepareWifi]) {
         if (error)
             *error = [NSError errorWithDomain:IRDeviceServicesErrorDomain code:1

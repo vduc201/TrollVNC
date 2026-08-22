@@ -26,6 +26,7 @@
 @property(nonatomic, weak) UIAlertController *alertController;
 @property(nonatomic, strong) NSTimer *checkTimer;
 @property(nonatomic, strong) NSBundle *localizationBundle;
+@property(nonatomic, assign) NSUInteger serviceChecks;
 
 @end
 
@@ -102,10 +103,25 @@
                                                       repeats:YES];
 
     _isAlertPresented = YES;
+    self.serviceChecks = 0;
 }
 
 - (void)checkServiceStatus:(NSTimer *)timer {
-    [self reloadWithCoordinator:[TVNCServiceCoordinator sharedCoordinator]];
+    TVNCServiceCoordinator *coordinator = [TVNCServiceCoordinator sharedCoordinator];
+    [self reloadWithCoordinator:coordinator];
+    if (coordinator.isServiceRunning) return;
+    self.serviceChecks += 1;
+    if (self.serviceChecks < 8) return;
+
+    [self.checkTimer invalidate];
+    self.checkTimer = nil;
+    [self.alertController dismissViewControllerAnimated:YES completion:nil];
+    self.alertController = nil;
+    UIAlertController *failure = [UIAlertController alertControllerWithTitle:@"iRemoteAgent chưa khởi động"
+                                                                       message:coordinator.lastStartDiagnostic
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+    [failure addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:failure animated:YES completion:nil];
 }
 
 - (void)serviceStatusDidChange:(NSNotification *)aNoti {

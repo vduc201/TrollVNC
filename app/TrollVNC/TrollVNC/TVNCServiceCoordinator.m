@@ -37,6 +37,8 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
 @interface TVNCServiceCoordinator ()
 @property(nonatomic, strong) NSTimer *checkTimer;
 @property(nonatomic, strong) NSUserDefaults *userDefaults;
+@property(nonatomic, copy, readwrite) NSString *lastStartDiagnostic;
+@property(nonatomic, assign) NSUInteger startAttempts;
 @end
 
 @implementation TVNCServiceCoordinator
@@ -79,6 +81,8 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
 - (void)commonInit {
     _checkTimer = nil;
     _serviceRunning = NO;
+    _lastStartDiagnostic = @"Đang chờ iRemoteAgent khởi động.";
+    _startAttempts = 0;
     _userDefaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
 
     NSBundle *prefsBundle = [NSBundle bundleWithPath:[[NSBundle mainBundle] pathForResource:@"TrollVNCPrefs"
@@ -120,6 +124,13 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
     if (!running) {
         [self checkPrebootDependencies];
         [self spawnService];
+        _startAttempts += 1;
+        if (_startAttempts >= 3 && ![self _isServiceRunning]) {
+            _lastStartDiagnostic = @"trollvncmanager đã không mở cổng supervisor 46751. Kiểm tra lại TIPA hoặc quyền khởi chạy.";
+        }
+    } else {
+        _startAttempts = 0;
+        _lastStartDiagnostic = @"iRemoteAgent đang chạy · supervisor USB 46751 sẵn sàng.";
     }
     if (_serviceRunning != running) {
         _serviceRunning = running;
@@ -155,6 +166,7 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
 
     NSString *executablePath = [[NSBundle mainBundle] pathForResource:@"trollvncmanager" ofType:@""];
     if (!executablePath) {
+        _lastStartDiagnostic = @"Không tìm thấy trollvncmanager trong TIPA.";
         return;
     }
 
@@ -171,11 +183,14 @@ int SBSLaunchApplicationWithIdentifierAndURLAndLaunchOptions(CFStringRef bundleI
     NSError *error = nil;
     BOOL launched = [serviceTask launchAndReturnError:&error];
     if (!launched) {
+        _lastStartDiagnostic = [NSString stringWithFormat:@"Không thể chạy trollvncmanager: %@", error.localizedDescription ?: @"unknown error"];
 #if DEBUG
         NSLog(@"[TVNC] Failed to launch service: %@", error);
 #endif
         return;
     }
+
+    _lastStartDiagnostic = @"Đã gọi trollvncmanager · đang chờ cổng supervisor USB 46751.";
 
     int unused;
     waitpid(serviceTask.processIdentifier, &unused, WNOHANG);

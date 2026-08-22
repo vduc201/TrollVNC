@@ -24,6 +24,7 @@ FOUNDATION_EXPORT NSNotificationName const TVNCServiceStatusDidChangeNotificatio
 @interface TVNCServiceCoordinator : NSObject
 
 @property(nonatomic, assign, getter=isServiceRunning) BOOL serviceRunning;
+@property(nonatomic, copy, readonly) NSString *lastStartDiagnostic;
 
 + (instancetype)sharedCoordinator;
 - (void)registerServiceMonitor;

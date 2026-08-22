@@ -4408,6 +4408,10 @@ static BOOL irSimpleReadLine(int fd, NSMutableData *buffer, NSString **lineOut) 
 }
 
 static void irSimpleHandleConnection(int cfd) {
+    int noSignalPipe = 1;
+#ifdef SO_NOSIGPIPE
+    setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &noSignalPipe, sizeof(noSignalPipe));
+#endif
     struct timeval timeout = { .tv_sec = 120, .tv_usec = 0 };
     setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
@@ -4424,6 +4428,10 @@ static void irSimpleHandleConnection(int cfd) {
             if ([line isEqualToString:@"__TOO_LONG__"]) { response = @"ERR INVALID_COMMAND\n"; closeAfterWrite = YES; }
             else response = irSimpleHandleCommand(line, &authenticated, &closeAfterWrite);
             NSData *data = [response dataUsingEncoding:NSUTF8StringEncoding];
+            if (!data.length) {
+                TVLog(@"Simple Control: empty response for command");
+                break;
+            }
             tvCtlWriteAll(cfd, data.bytes, data.length);
             if (closeAfterWrite) break;
         }
@@ -4436,7 +4444,10 @@ static void irStartSimpleControlSocket(void) {
     // available even when the VNC repeater/viewer mode is enabled.
     if (gIRSimpleAcceptSource) return;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { TVPrintError("Simple Control: socket failed: %s", strerror(errno)); return; }
+    if (fd < 0) {
+        TVPrintError("Simple Control: socket failed: %s", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
     int yes = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 #ifdef SO_NOSIGPIPE
@@ -4451,15 +4462,16 @@ static void irStartSimpleControlSocket(void) {
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 8) < 0 || tvSetNonBlocking(fd) < 0) {
         TVPrintError("Simple Control: bind/listen 127.0.0.1:%d failed: %s", kIRSimpleControlPort, strerror(errno));
         close(fd);
-        return;
+        exit(EXIT_FAILURE);
     }
     gIRSimpleListenFd = fd;
-    dispatch_queue_t acceptQueue = dispatch_queue_create("com.82flex.trollvnc.simple-control.accept", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_t acceptQueue = dispatch_queue_create("com.82flex.trollvnc.simple-control.accept", DISPATCH_QUEUE_SERIAL_WITH_AUTORELEASE_POOL);
     gIRSimpleAcceptSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, acceptQueue);
     dispatch_source_set_event_handler(gIRSimpleAcceptSource, ^{
         for (;;) {
             int cfd = accept(fd, NULL, NULL);
             if (cfd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) break; else break; }
+            TVLog(@"Simple Control: accepted connection fd=%d", cfd);
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ irSimpleHandleConnection(cfd); });
         }
     });
@@ -5661,6 +5673,10 @@ int main(int argc, const char *argv[]) {
     }
 
     @autoreleasepool {
+        // This tokenless loopback service is mandatory for iRemote's direct USB
+        // features.  Start it before VNC/capture initialization so a healthy VNC
+        // session can never be published without its paired control channel.
+        irStartSimpleControlSocket();
         setupGeometry();
         setupOrientationObserver();
 
@@ -5684,7 +5700,6 @@ int main(int argc, const char *argv[]) {
         installTerminationHandlers();
 
         tvStartControlSocketIfNeeded();
-        irStartSimpleControlSocket();
     }
 
     CFRunLoopRun();

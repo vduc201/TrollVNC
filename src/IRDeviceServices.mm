@@ -20,7 +20,7 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
     void *mWifiManager;
     void *mWifiDevice;
     void *(*mWifiCreate)(CFAllocatorRef, int);
-    void *(*mWifiGetDevice)(void *);
+    CFArrayRef (*mWifiCopyDevices)(void *);
     int (*mWifiGetPower)(void *);
     void (*mWifiSetPower)(void *, int);
     NSString *mWifiError;
@@ -51,20 +51,28 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
     }
     if (!mWifiCreate)
         mWifiCreate = (void *(*)(CFAllocatorRef, int))dlsym(mWifiHandle, "WiFiManagerClientCreate");
-    if (!mWifiGetDevice)
-        mWifiGetDevice = (void *(*)(void *))dlsym(mWifiHandle, "WiFiManagerClientGetDevice");
+    if (!mWifiCopyDevices)
+        mWifiCopyDevices = (CFArrayRef (*)(void *))dlsym(mWifiHandle, "WiFiManagerClientCopyDevices");
     if (!mWifiGetPower)
         mWifiGetPower = (int (*)(void *))dlsym(mWifiHandle, "WiFiDeviceClientGetPower");
     if (!mWifiSetPower)
         mWifiSetPower = (void (*)(void *, int))dlsym(mWifiHandle, "WiFiDeviceClientSetPower");
-    if (!mWifiCreate || !mWifiGetDevice || !mWifiGetPower || !mWifiSetPower) {
+    if (!mWifiCreate || !mWifiCopyDevices || !mWifiGetPower || !mWifiSetPower) {
         mWifiError = @"mobilewifi-symbols-unavailable";
         return NO;
     }
     if (!mWifiManager)
         mWifiManager = mWifiCreate(kCFAllocatorDefault, 0);
-    if (mWifiManager)
-        mWifiDevice = mWifiGetDevice(mWifiManager);
+    if (mWifiManager) {
+        CFArrayRef devices = mWifiCopyDevices(mWifiManager);
+        if (devices && CFArrayGetCount(devices) > 0) {
+            mWifiDevice = (void *)CFArrayGetValueAtIndex(devices, 0);
+            if (mWifiDevice)
+                CFRetain((CFTypeRef)mWifiDevice);
+        }
+        if (devices)
+            CFRelease(devices);
+    }
     if (!mWifiManager || !mWifiDevice) {
         mWifiError = @"mobilewifi-device-unavailable";
         return NO;
@@ -74,6 +82,8 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
 }
 
 - (void)dealloc {
+    if (mWifiDevice)
+        CFRelease((CFTypeRef)mWifiDevice);
     if (mWifiManager)
         CFRelease((CFTypeRef)mWifiManager);
     if (mWifiHandle)

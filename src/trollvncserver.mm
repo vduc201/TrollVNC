@@ -4310,12 +4310,10 @@ static NSString *irSimpleHandleCommand(NSString *line, BOOL *authenticated, BOOL
     if ([line isEqualToString:@"PING"]) return @"OK PONG\n";
     if ([line isEqualToString:@"STATUS"]) {
         NSDictionary *capture = tvCaptureStatus();
-        NSDictionary *wifi = IRDeviceServices.sharedServices.wifiStatus;
-        NSString *wifiState = [wifi[@"supported"] boolValue] ? ([wifi[@"state"] uppercaseString] ?: @"UNKNOWN") : @"UNSUPPORTED";
         return [NSString stringWithFormat:@"OK STATUS VERSION=%s VNC=%@ CAPTURE=%@ ACTIVE=%@ WIFI=%@\n",
             PACKAGE_VERSION, gClientCount > 0 ? @"CONNECTED" : @"READY",
             [capture[@"configuredMode"] uppercaseString] ?: @"UNKNOWN",
-            [capture[@"activeBackend"] uppercaseString] ?: @"UNKNOWN", wifiState];
+            [capture[@"activeBackend"] uppercaseString] ?: @"UNKNOWN", @"UNKNOWN"];
     }
     if ([line isEqualToString:@"WIFI GET"]) return irSimpleWifiLine(IRDeviceServices.sharedServices.wifiStatus);
     if ([line isEqualToString:@"WIFI ON"] || [line isEqualToString:@"WIFI OFF"]) {

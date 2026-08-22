@@ -12,9 +12,14 @@ if [ -z "$THEBOOTSTRAP" ]; then
     exit 0
 fi
 
-# Set version information
-GIT_COMMIT_COUNT=$(git rev-list --count HEAD)
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $GIT_COMMIT_COUNT" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/Info.plist"
+# Set version information. CI uses a shallow checkout, so `git rev-list --count`
+# is always 1 and would make every TIPA look identical to iOS.  The package
+# revision is deliberately monotonically bumped for each iRemoteAgent release.
+BUILD_NUMBER="${PACKAGE_VERSION##*-}"
+if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+    BUILD_NUMBER=1
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $PACKAGE_VERSION" "$THEOS_STAGING_DIR/Applications/TrollVNC.app/Info.plist"
 
 # Collect executables

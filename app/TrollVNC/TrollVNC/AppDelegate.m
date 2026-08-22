@@ -18,6 +18,7 @@
 #import "AppDelegate.h"
 #import "TVNCHotspotManager.h"
 #import "TVNCServiceCoordinator.h"
+#import "TVNCUtil.h"
 
 #ifdef THEBOOTSTRAP
 #import "GitHubReleaseUpdater.h"
@@ -27,6 +28,14 @@
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     // Override point for customization after application launch.
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.82flex.trollvnc"];
+    NSString *build = [NSBundle mainBundle].objectForInfoDictionaryKey[@"CFBundleVersion"] ?: @"";
+    NSString *installedBuild = [defaults stringForKey:@"iRemoteAgentDaemonBuild"];
+    if (build.length && ![build isEqualToString:installedBuild]) {
+        TVNCRestartBundledServices();
+        [defaults setObject:build forKey:@"iRemoteAgentDaemonBuild"];
+        [defaults synchronize];
+    }
     [[TVNCServiceCoordinator sharedCoordinator] registerServiceMonitor];
     [[TVNCHotspotManager sharedManager] registerWithName:@"TrollVNC"];
 

@@ -89,3 +89,16 @@ NS_INLINE void TVNCRestartVNCService(void) {
         }
     });
 }
+
+// A bootstrap TIPA update replaces the bundled binaries on disk, but an
+// already-running manager keeps executing the old inode.  Restart both
+// processes once after an app-version change so direct USB capabilities are
+// always provided by the freshly installed daemon.
+NS_INLINE void TVNCRestartBundledServices(void) {
+    TVNCEnumerateProcesses(^(pid_t pid, NSString *executablePath, BOOL *stop) {
+        NSString *name = executablePath.lastPathComponent;
+        if ([name isEqualToString:@"trollvncserver"] || [name isEqualToString:@"trollvncmanager"]) {
+            (void)kill(pid, SIGTERM);
+        }
+    });
+}

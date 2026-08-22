@@ -119,6 +119,10 @@ jobs:
           ldid -e "$executable" | tee "$validation_dir/entitlements.plist"
           test -s "$validation_dir/entitlements.plist"
           plutil -lint "$validation_dir/entitlements.plist"
+          ldid -e "$agent_executable" | tee "$validation_dir/agent-entitlements.plist"
+          test -s "$validation_dir/agent-entitlements.plist"
+          plutil -lint "$validation_dir/agent-entitlements.plist"
+          /usr/libexec/PlistBuddy -c 'Print :com.apple.wifi.manager-access' "$validation_dir/agent-entitlements.plist" | grep -qx true
 
           mkdir -p artifacts
           cp "$package" artifacts/iRemoteAgent.tipa

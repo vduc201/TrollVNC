@@ -11,6 +11,10 @@
 
 static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.device-services";
 
+@interface IRDeviceServices ()
+- (BOOL)prepareWifi;
+@end
+
 @implementation IRDeviceServices {
     void *mWifiHandle;
     void *mWifiManager;
@@ -33,24 +37,43 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
     self = [super init];
     if (!self)
         return nil;
+    [self prepareWifi];
+    return self;
+}
+
+- (BOOL)prepareWifi {
+    if (mWifiDevice) {
+        mWifiError = nil;
+        return YES;
+    }
+    if (!mWifiHandle)
     mWifiHandle = dlopen("/System/Library/PrivateFrameworks/MobileWiFi.framework/MobileWiFi", RTLD_NOW | RTLD_LOCAL);
     if (!mWifiHandle) {
         mWifiError = @"mobilewifi-framework-unavailable";
-        return self;
+        return NO;
     }
-    mWifiCreate = (void *(*)(CFAllocatorRef, int))dlsym(mWifiHandle, "WiFiManagerClientCreate");
-    mWifiGetDevice = (void *(*)(void *))dlsym(mWifiHandle, "WiFiManagerClientGetDevice");
-    mWifiGetPower = (int (*)(void *))dlsym(mWifiHandle, "WiFiDeviceClientGetPower");
-    mWifiSetPower = (void (*)(void *, int))dlsym(mWifiHandle, "WiFiDeviceClientSetPower");
+    if (!mWifiCreate)
+        mWifiCreate = (void *(*)(CFAllocatorRef, int))dlsym(mWifiHandle, "WiFiManagerClientCreate");
+    if (!mWifiGetDevice)
+        mWifiGetDevice = (void *(*)(void *))dlsym(mWifiHandle, "WiFiManagerClientGetDevice");
+    if (!mWifiGetPower)
+        mWifiGetPower = (int (*)(void *))dlsym(mWifiHandle, "WiFiDeviceClientGetPower");
+    if (!mWifiSetPower)
+        mWifiSetPower = (void (*)(void *, int))dlsym(mWifiHandle, "WiFiDeviceClientSetPower");
     if (!mWifiCreate || !mWifiGetDevice || !mWifiGetPower || !mWifiSetPower) {
         mWifiError = @"mobilewifi-symbols-unavailable";
-        return self;
+        return NO;
     }
-    mWifiManager = mWifiCreate(kCFAllocatorDefault, 0);
-    mWifiDevice = mWifiManager ? mWifiGetDevice(mWifiManager) : NULL;
-    if (!mWifiManager || !mWifiDevice)
+    if (!mWifiManager)
+        mWifiManager = mWifiCreate(kCFAllocatorDefault, 0);
+    if (mWifiManager)
+        mWifiDevice = mWifiGetDevice(mWifiManager);
+    if (!mWifiManager || !mWifiDevice) {
         mWifiError = @"mobilewifi-device-unavailable";
-    return self;
+        return NO;
+    }
+    mWifiError = nil;
+    return YES;
 }
 
 - (void)dealloc {
@@ -61,21 +84,24 @@ static NSString *const IRDeviceServicesErrorDomain = @"com.82flex.trollvnc.devic
 }
 
 - (NSDictionary *)wifiStatus {
-    if (mWifiError)
+    if (![self prepareWifi])
         return @{ @"supported" : @NO, @"state" : @"unknown", @"reason" : mWifiError };
     return @{ @"supported" : @YES, @"state" : mWifiGetPower(mWifiDevice) ? @"on" : @"off" };
 }
 
 - (BOOL)setWifiEnabled:(BOOL)enabled error:(NSError **)error {
-    if (mWifiError) {
+    if (![self prepareWifi]) {
         if (error)
             *error = [NSError errorWithDomain:IRDeviceServicesErrorDomain code:1
                                       userInfo:@{NSLocalizedDescriptionKey : mWifiError}];
         return NO;
     }
     mWifiSetPower(mWifiDevice, enabled ? 1 : 0);
-    usleep(200000);
     BOOL actual = mWifiGetPower(mWifiDevice) != 0;
+    for (NSUInteger attempt = 0; attempt < 20 && actual != enabled; attempt++) {
+        usleep(100000);
+        actual = mWifiGetPower(mWifiDevice) != 0;
+    }
     if (actual != enabled) {
         if (error)
             *error = [NSError errorWithDomain:IRDeviceServicesErrorDomain code:2

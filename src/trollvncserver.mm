@@ -3606,6 +3606,16 @@ static int tvSetNonBlocking(int fd) {
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+// The listening socket must be non-blocking for its dispatch source, but the
+// Simple Control protocol is a line-oriented, blocking session.  Restore the
+// accepted client socket to blocking mode before handing it to that reader.
+static int tvSetBlocking(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+        return -1;
+    return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+}
+
 static void tvStopControlSocket(void) {
     if (gIRSimpleAcceptSource) {
         dispatch_source_cancel(gIRSimpleAcceptSource);
@@ -4471,6 +4481,11 @@ static void irStartSimpleControlSocket(void) {
         for (;;) {
             int cfd = accept(fd, NULL, NULL);
             if (cfd < 0) { if (errno == EAGAIN || errno == EWOULDBLOCK) break; else break; }
+            if (tvSetBlocking(cfd) < 0) {
+                TVLog(@"Simple Control: failed to set accepted socket blocking: %s", strerror(errno));
+                close(cfd);
+                continue;
+            }
             TVLog(@"Simple Control: accepted connection fd=%d", cfd);
             dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ irSimpleHandleConnection(cfd); });
         }

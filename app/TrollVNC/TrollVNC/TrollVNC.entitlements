@@ -526,6 +526,8 @@
 	</array>
 	<key>platform-application</key>
 	<true/>
+	<key>com.apple.wifi.manager-access</key>
+	<true/>
 	<key>uicache.app-data-container-required</key>
 	<true/>
 	<key>user-preference-read</key>

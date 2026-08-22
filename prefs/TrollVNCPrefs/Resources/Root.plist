@@ -158,30 +158,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>iRemote Control API</string>
-			<key>footerText</key>
-			<string>Per-device bearer token used by iRemote over the USB-forwarded control channel. Use at least 24 characters. It is never written to logs.</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSecureEditTextCell</string>
-			<key>defaults</key>
-			<string>com.82flex.trollvnc</string>
-			<key>key</key>
-			<string>ControlToken</string>
-			<key>label</key>
-			<string>Control API Token</string>
-			<key>placeholder</key>
-			<string>24 characters minimum</string>
-			<key>noAutoCorrect</key>
-			<true/>
-		</dict>
-
-		<!-- Clipboard Sync -->
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string></string>
 			<key>footerText</key>
 			<string>Syncs text clipboard with VNC clients while connected. Disable if you do not want remote clipboard access.</string>
